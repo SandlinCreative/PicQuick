@@ -37,17 +37,23 @@ create_thumbnails()
 # Flask route for the gallery
 @app.route('/')
 def gallery():
-    thumbnails = [os.path.join('thumbs', file) for file in os.listdir(THUMB_FOLDER) if file.endswith(('.jpg', '.jpeg', '.png'))]
+    # Get the current directory name to use as the page title
+    folder_name = os.path.basename(os.getcwd())
+    thumbnails = [f for f in os.listdir(THUMB_FOLDER) if f.endswith(('.jpg', '.jpeg', '.png'))]
+    images = [f for f in os.listdir(IMAGE_FOLDER) if f.endswith(('.jpg', '.jpeg', '.png'))]
+    image_data = [{'thumb': os.path.join('thumbs', thumb), 'image': image}
+                  for thumb, image in zip(thumbnails, images)]
+    
     return render_template_string('''
         <!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Image Gallery</title>
+            <title>{{ folder_name }}</title>
             <style>
                 #gallery img {
-                    height: 100px; /* Displaying the thumbnails at a consistent size */
+                    height: 100px; /* Or your desired thumbnail display height */
                     margin: 5px;
                     border: 1px solid #ccc;
                     box-shadow: 2px 2px 5px rgba(0,0,0,0.5);
@@ -56,18 +62,24 @@ def gallery():
                     display: flex;
                     flex-wrap: wrap;
                 }
+                #gallery a {
+                    /* Styles to make the link containers behave and look as desired */
+                }
             </style>
         </head>
         <body>
-            <h1>Dynamic Image Gallery</h1>
+            <h1>{{ folder_name }}</h1>
             <div id="gallery">
-                {% for thumbnail in thumbnails %}
-                    <img src="{{ url_for('static', filename=thumbnail) }}" alt="Gallery Image">
+                {% for item in image_data %}
+                    <a href="{{ url_for('static', filename=item.image) }}" target="_blank">
+                        <img src="{{ url_for('static', filename=item.thumb) }}" alt="Gallery Image">
+                    </a>
                 {% endfor %}
             </div>
         </body>
         </html>
-    ''', thumbnails=thumbnails)
+    ''', folder_name=folder_name, image_data=image_data)
+
 
 class NewImageHandler(FileSystemEventHandler):
     def on_created(self, event):
