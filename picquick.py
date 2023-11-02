@@ -1,102 +1,105 @@
-from flask import Flask, render_template_string, url_for
+from flask import Flask, render_template_string, send_from_directory, abort
 from PIL import Image
-import os
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+import os
+import threading
 
-app = Flask(__name__, static_url_path='', static_folder='.')
-IMAGE_FOLDER = os.path.dirname(os.path.abspath(__file__))
-THUMB_FOLDER = os.path.join(IMAGE_FOLDER, 'thumbs')
+app = Flask(__name__)
 
-if not os.path.exists(THUMB_FOLDER):
-    os.makedirs(THUMB_FOLDER)
+# Embedded HTML templates
+INDEX_TEMPLATE = """
+<!doctype html>
+<title>PicQuick Gallery Index</title>
+<h1>Image Galleries</h1>
+<ul>
+    {% for folder in folders %}
+    <li><a href="{{ url_for('show_gallery', folder_name=folder) }}">{{ folder }}</a></li>
+    {% endfor %}
+</ul>
+"""
 
-def create_thumbnail(image_path):
+GALLERY_TEMPLATE = """
+<!doctype html>
+<title>PicQuick Gallery - {{ folder_name }}</title>
+<h1>Gallery: {{ folder_name }}</h1>
+<a href="{{ url_for('gallery_index') }}">Back to the index</a>
+<div>
+    {% for thumbnail in thumbnails %}
+    <a href="{{ url_for('custom_static', filename=folder_name + '/' + thumbnail) }}">
+        <img src="{{ url_for('custom_static_for_thumbs', filename=folder_name + '/' + thumbnail) }}" alt="{{ thumbnail }}" style="height: 500px;">
+    </a>
+    {% endfor %}
+</div>
+"""
+
+# Image processing function
+def create_thumbnail(image_path, thumbnail_path):
     with Image.open(image_path) as img:
-        height = 400
-        # Calculate the new width to preserve the aspect ratio
-        aspect_ratio = img.width / img.height
-        width = int(height * aspect_ratio)
-        
-        # Creating the thumbnail
-        img.thumbnail((width, height))
-        # Save it to the thumbs directory
-        thumb_path = os.path.join(THUMB_FOLDER, os.path.basename(image_path))
-        img.save(thumb_path, "JPEG")
+        img.thumbnail((img.width, 500), Image.ANTIALIAS)
+        root, ext = os.path.splitext(thumbnail_path)
+        thumbnail_file = f"{root}.jpg"
+        img.save(thumbnail_file, "JPEG")
 
-# Function to create thumbnails for existing images
-def create_thumbnails():
-    for filename in os.listdir(IMAGE_FOLDER):
-        if filename.endswith(('.jpg', '.jpeg', '.png')):
-            image_path = os.path.join(IMAGE_FOLDER, filename)
-            create_thumbnail(image_path)
-
-# Call the function to create thumbnails on startup
-create_thumbnails()
-
-# Flask route for the gallery
-@app.route('/')
-def gallery():
-    # Get the current directory name to use as the page title
-    folder_name = os.path.basename(os.getcwd())
-    thumbnails = [f for f in os.listdir(THUMB_FOLDER) if f.endswith(('.jpg', '.jpeg', '.png'))]
-    images = [f for f in os.listdir(IMAGE_FOLDER) if f.endswith(('.jpg', '.jpeg', '.png'))]
-    image_data = [{'thumb': os.path.join('thumbs', thumb), 'image': image}
-                  for thumb, image in zip(thumbnails, images)]
-    
-    return render_template_string('''
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>{{ folder_name }}</title>
-            <style>
-                #gallery img {
-                    height: 100px; /* Or your desired thumbnail display height */
-                    margin: 5px;
-                    border: 1px solid #ccc;
-                    box-shadow: 2px 2px 5px rgba(0,0,0,0.5);
-                }
-                #gallery {
-                    display: flex;
-                    flex-wrap: wrap;
-                }
-                #gallery a {
-                    /* Styles to make the link containers behave and look as desired */
-                }
-            </style>
-        </head>
-        <body>
-            <h1>{{ folder_name }}</h1>
-            <div id="gallery">
-                {% for item in image_data %}
-                    <a href="{{ url_for('static', filename=item.image) }}" target="_blank">
-                        <img src="{{ url_for('static', filename=item.thumb) }}" alt="Gallery Image">
-                    </a>
-                {% endfor %}
-            </div>
-        </body>
-        </html>
-    ''', folder_name=folder_name, image_data=image_data)
-
-
-class NewImageHandler(FileSystemEventHandler):
+# Watchdog event handler
+class ImageEventHandler(FileSystemEventHandler):
     def on_created(self, event):
-        # Check if the event is for a new image file
-        if event.src_path.endswith(('.jpg', '.jpeg', '.png')):
-            create_thumbnail(event.src_path)
+        if not event.is_directory:
+            thumbnail_path = get_thumbnail_path(event.src_path)
+            create_thumbnail(event.src_path, thumbnail_path)
 
-if __name__ == '__main__':
-    # Set up watchdog observer
-    event_handler = NewImageHandler()
+def get_thumbnail_path(image_path):
+    dir_name, file_name = os.path.split(image_path)
+    thumb_dir = os.path.join('thumbs', dir_name)
+    if not os.path.exists(thumb_dir):
+        os.makedirs(thumb_dir)
+    return os.path.join(thumb_dir, file_name)
+
+# Watchdog monitoring setup
+def start_monitoring(path):
+    event_handler = ImageEventHandler()
     observer = Observer()
-    observer.schedule(event_handler, path=IMAGE_FOLDER, recursive=False)
+    observer.schedule(event_handler, path, recursive=True)
     observer.start()
 
+# Flask view functions
+@app.route('/')
+def gallery_index():
+    folders = [folder for folder in next(os.walk('.'))[1] if not folder.startswith('thumbs')]
+    return render_template_string(INDEX_TEMPLATE, folders=folders)
+
+@app.route('/gallery/<folder_name>')
+def show_gallery(folder_name):
     try:
-        # Start the Flask app
-        app.run(debug=True, use_reloader=False)
-    finally:
-        observer.stop()
-        observer.join()
+        thumbnails = os.listdir(f'./thumbs/{folder_name}')
+        thumbnails = [thumb for thumb in thumbnails if thumb.endswith('.jpg')]
+    except FileNotFoundError:
+        abort(404)
+    return render_template_string(GALLERY_TEMPLATE, thumbnails=thumbnails, folder_name=folder_name)
+
+@app.route('/thumbs/<path:filename>')
+def custom_static_for_thumbs(filename):
+    return send_from_directory('thumbs', filename)
+
+@app.route('/<path:filename>')
+def custom_static(filename):
+    return send_from_directory('.', filename)
+
+# Function to create thumbnails for all existing images
+def generate_existing_thumbnails():
+    for root, dirs, files in os.walk('.'):
+        for file in files:
+            if file.endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                image_path = os.path.join(root, file)
+                thumbnail_path = get_thumbnail_path(image_path)
+                if not os.path.exists(thumbnail_path):
+                    create_thumbnail(image_path, thumbnail_path)
+
+if __name__ == '__main__':
+    # Generate thumbnails for existing images
+    generate_existing_thumbnails()
+    # Start watchdog monitoring in a new thread
+    monitor_thread = threading.Thread(target=start_monitoring, args=('.',), daemon=True)
+    monitor_thread.start()
+    # Start Flask app
+    app.run(debug=True, use_reloader=False)
